@@ -9,7 +9,8 @@ It mirrors the core behavior from the EVM implementation in `paycrest/contracts`
 
 - owner-managed protocol configuration (treasury, aggregator, token support, token fee settings)
 - order creation with deterministic order IDs and escrowed token vaults
-- settlement flows for local and FX transfers
+- settlement flows for local and FX transfers (`settle_out`)
+- onramp settlement flow (`settle_in`)
 - sender fee splitting and protocol fee collection
 - refund flow with capped fee deduction
 - pause/unpause controls
@@ -100,8 +101,9 @@ Then configure:
 - `MAX_BPS` is `100_000` (basis-point precision used by the EVM implementation).
 - local transfer mode is triggered when `rate == 100` and requires `sender_fee > 0`.
 - FX mode (`rate != 100`) requires `provider_to_aggregator_fx > 0` in token settings.
-- settlement supports split fills via `settle_percent`.
+- settlement supports split fills via `settle_percent` in `settle_out`.
 - rebates are applied from protocol fee during settlement using `rebate_percent`.
+- `settle_in` finalizes orders atomically by collecting liquidity from provider, transferring recipient payout, and splitting sender/protocol fees.
 
 ## License
 

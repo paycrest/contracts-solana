@@ -113,7 +113,7 @@ class GatewayModel {
     return orderId;
   }
 
-  settle(input: {
+  settleOut(input: {
     caller: string;
     orderId: string;
     liquidityProvider: string;
@@ -165,6 +165,87 @@ class GatewayModel {
     }
 
     this.transferVault(input.liquidityProvider, liquidityProviderAmount);
+  }
+
+  settle(input: {
+    caller: string;
+    orderId: string;
+    liquidityProvider: string;
+    settlePercent: bigint;
+    rebatePercent: bigint;
+  }): void {
+    // Backward-compatible alias to reflect on-chain API transition.
+    this.settleOut(input);
+  }
+
+  settleIn(input: {
+    caller: string;
+    orderId: string;
+    token: string;
+    amount: bigint;
+    senderFeeRecipient: string;
+    senderFee: bigint;
+    recipient: string;
+    rate: bigint;
+  }): void {
+    if (this.paused) throw new Error("Paused");
+    if (!this.tokenSupported.get(input.token)) throw new Error("TokenNotSupported");
+    if (input.amount === 0n) throw new Error("AmountIsZero");
+    if (!input.recipient) throw new Error("ThrowZeroAddress");
+    if (this.orders.has(input.orderId)) throw new Error("OrderAlreadyExists");
+
+    if (input.senderFee !== 0n && !input.senderFeeRecipient) {
+      throw new Error("InvalidSenderFeeRecipient");
+    }
+
+    const totalAmount = input.amount + input.senderFee;
+    this.debit(input.caller, totalAmount);
+    this.credit("gateway_vault", totalAmount);
+
+    let amountToSettle = input.amount;
+    let aggregatorFee = 0n;
+
+    if (input.rate === 100n) {
+      if (input.senderFee === 0n) throw new Error("SenderFeeIsZero");
+    } else {
+      const settings = this.getTokenSettings(input.token);
+      if (settings.providerToAggregatorFx === 0n) {
+        throw new Error("TokenFeeSettingsNotConfigured");
+      }
+      aggregatorFee = mulDiv(input.amount, settings.providerToAggregatorFx, MAX_BPS);
+      if (aggregatorFee > 0n) {
+        amountToSettle -= aggregatorFee;
+        this.transferVault(this.treasury, aggregatorFee);
+      }
+    }
+
+    const order: Order = {
+      sender: input.recipient,
+      token: input.token,
+      senderFeeRecipient: input.senderFeeRecipient,
+      senderFee: input.senderFee,
+      protocolFee: aggregatorFee,
+      isFulfilled: true,
+      isRefunded: false,
+      refundAddress: "",
+      currentBps: 0n,
+      amount: amountToSettle,
+    };
+    this.orders.set(input.orderId, order);
+
+    this.transferVault(input.recipient, amountToSettle);
+
+    if (input.senderFee !== 0n) {
+      if (aggregatorFee === 0n) {
+        this.handleLocalSenderFeeSplit(order, input.caller, MAX_BPS);
+      } else {
+        this.handleFxSenderFeeSplit(order);
+      }
+    }
+  }
+
+  getAggregator(): string {
+    return this.aggregator;
   }
 
   refund(input: { caller: string; orderId: string; fee: bigint }): void {
@@ -264,7 +345,6 @@ const computeOrderId = (sender: string, nonce: bigint, chainId: bigint): string 
 
 describe("Gateway Solana parity tests", () => {
   const token = "USDT";
-  const deployer = "deployer";
   const treasury = "treasury";
   const aggregator = "aggregator";
   const sender = "sender";
@@ -319,7 +399,7 @@ describe("Gateway Solana parity tests", () => {
       messageHash: "0xhash",
     });
 
-    g.settle({
+    g.settleOut({
       caller: aggregator,
       orderId,
       liquidityProvider: lp1,
@@ -347,14 +427,14 @@ describe("Gateway Solana parity tests", () => {
       messageHash: "0xhash",
     });
 
-    g.settle({
+    g.settleOut({
       caller: aggregator,
       orderId,
       liquidityProvider: lp1,
       settlePercent: 50_000n,
       rebatePercent: 25_000n,
     });
-    g.settle({
+    g.settleOut({
       caller: aggregator,
       orderId,
       liquidityProvider: lp2,
@@ -383,7 +463,7 @@ describe("Gateway Solana parity tests", () => {
       messageHash: "0xhash",
     });
 
-    g.settle({
+    g.settleOut({
       caller: aggregator,
       orderId,
       liquidityProvider: lp1,
@@ -445,7 +525,7 @@ describe("Gateway Solana parity tests", () => {
     });
 
     expect(() =>
-      g.settle({
+      g.settleOut({
         caller: "not-aggregator",
         orderId,
         liquidityProvider: lp1,
@@ -455,7 +535,7 @@ describe("Gateway Solana parity tests", () => {
     ).to.throw("OnlyAggregator");
 
     expect(() =>
-      g.settle({
+      g.settleOut({
         caller: aggregator,
         orderId,
         liquidityProvider: lp1,
@@ -463,5 +543,118 @@ describe("Gateway Solana parity tests", () => {
         rebatePercent: MAX_BPS + 1n,
       })
     ).to.throw("InvalidRebatePercent");
+  });
+
+  it("processes settleIn FX flow parity", () => {
+    const g = setup();
+    g.mint(lp1, 50_000n);
+    const orderId = "onramp-order-1";
+
+    g.settleIn({
+      caller: lp1,
+      orderId,
+      token,
+      amount: 10_000n,
+      senderFeeRecipient: sender,
+      senderFee: 100n,
+      recipient: alice,
+      rate: 750n,
+    });
+
+    const order = g.getOrder(orderId);
+    expect(order.isFulfilled).to.equal(true);
+    expect(order.currentBps).to.equal(0n);
+    expect(order.amount).to.equal(9_950n);
+    expect(g.balanceOf(alice)).to.equal(9_950n);
+    expect(g.balanceOf(sender)).to.equal(27_000_100n);
+    expect(g.balanceOf(treasury)).to.equal(50n);
+    expect(g.balanceOf(lp1)).to.equal(39_900n);
+    expect(g.balanceOf("gateway_vault")).to.equal(0n);
+  });
+
+  it("processes settleIn local flow with sender-fee splitting", () => {
+    const g = setup();
+    g.mint(lp1, 50_000n);
+    const orderId = "onramp-order-2";
+
+    g.settleIn({
+      caller: lp1,
+      orderId,
+      token,
+      amount: 10_000n,
+      senderFeeRecipient: sender,
+      senderFee: 100n,
+      recipient: alice,
+      rate: 100n,
+    });
+
+    expect(g.balanceOf(alice)).to.equal(10_000n);
+    expect(g.balanceOf(sender)).to.equal(27_000_050n);
+    expect(g.balanceOf(lp1)).to.equal(39_925n);
+    expect(g.balanceOf(treasury)).to.equal(25n);
+    expect(g.balanceOf("gateway_vault")).to.equal(0n);
+  });
+
+  it("rejects settleIn when paused or local sender fee is zero", () => {
+    const g = setup();
+    g.mint(lp1, 50_000n);
+    g.paused = true;
+    expect(() =>
+      g.settleIn({
+        caller: lp1,
+        orderId: "onramp-order-paused",
+        token,
+        amount: 10_000n,
+        senderFeeRecipient: sender,
+        senderFee: 100n,
+        recipient: alice,
+        rate: 750n,
+      })
+    ).to.throw("Paused");
+
+    g.paused = false;
+    expect(() =>
+      g.settleIn({
+        caller: lp1,
+        orderId: "onramp-order-local",
+        token,
+        amount: 10_000n,
+        senderFeeRecipient: sender,
+        senderFee: 0n,
+        recipient: alice,
+        rate: 100n,
+      })
+    ).to.throw("SenderFeeIsZero");
+  });
+
+  it("rejects duplicate settleIn order IDs and exposes aggregator getter", () => {
+    const g = setup();
+    g.mint(lp1, 50_000n);
+    const orderId = "onramp-order-3";
+
+    g.settleIn({
+      caller: lp1,
+      orderId,
+      token,
+      amount: 10_000n,
+      senderFeeRecipient: sender,
+      senderFee: 100n,
+      recipient: alice,
+      rate: 750n,
+    });
+
+    expect(g.getAggregator()).to.equal(aggregator);
+    expect(() =>
+      g.settleIn({
+        caller: lp1,
+        orderId,
+        token,
+        amount: 10_000n,
+        senderFeeRecipient: sender,
+        senderFee: 100n,
+        recipient: alice,
+        rate: 750n,
+      })
+    ).to.throw("OrderAlreadyExists");
   });
 });

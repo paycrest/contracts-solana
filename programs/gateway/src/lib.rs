@@ -273,8 +273,8 @@ pub mod gateway {
         Ok(())
     }
 
-    pub fn settle(
-        ctx: Context<Settle>,
+    pub fn settle_out(
+        ctx: Context<SettleOutCtx>,
         split_order_id: [u8; 32],
         order_id: [u8; 32],
         settle_percent: u64,
@@ -387,12 +387,173 @@ pub mod gateway {
             ctx.bumps.vault_authority,
         )?;
 
-        emit!(OrderSettled {
+        emit!(SettleOut {
             split_order_id,
             order_id,
             liquidity_provider: ctx.accounts.liquidity_provider.key(),
             settle_percent,
             rebate_percent,
+        });
+        Ok(())
+    }
+
+    pub fn settle(
+        ctx: Context<SettleOutCtx>,
+        split_order_id: [u8; 32],
+        order_id: [u8; 32],
+        settle_percent: u64,
+        rebate_percent: u64,
+    ) -> Result<()> {
+        // Backward-compatible alias retained for existing clients.
+        settle_out(
+            ctx,
+            split_order_id,
+            order_id,
+            settle_percent,
+            rebate_percent,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_in(
+        ctx: Context<SettleInCtx>,
+        order_id: [u8; 32],
+        amount: u64,
+        sender_fee_recipient: Pubkey,
+        sender_fee: u64,
+        recipient: Pubkey,
+        rate: u64,
+    ) -> Result<()> {
+        let config = &ctx.accounts.config;
+        require!(!config.paused, GatewayError::Paused);
+        require!(
+            ctx.accounts.token_config.status == 1,
+            GatewayError::TokenNotSupported
+        );
+        require!(amount > 0, GatewayError::AmountIsZero);
+        require!(
+            recipient != Pubkey::default(),
+            GatewayError::ThrowZeroAddress
+        );
+        if sender_fee != 0 {
+            require!(
+                sender_fee_recipient != Pubkey::default(),
+                GatewayError::InvalidSenderFeeRecipient
+            );
+            require!(
+                ctx.accounts.sender_fee_recipient_token_account.owner == sender_fee_recipient,
+                GatewayError::SenderFeeTokenOwnerMismatch
+            );
+        }
+
+        let total_amount = amount
+            .checked_add(sender_fee)
+            .ok_or(GatewayError::MathOverflow)?;
+        let transfer_in_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx
+                    .accounts
+                    .liquidity_provider_token_account
+                    .to_account_info(),
+                to: ctx.accounts.vault_token_account.to_account_info(),
+                authority: ctx.accounts.liquidity_provider.to_account_info(),
+            },
+        );
+        token::transfer(transfer_in_ctx, total_amount)?;
+
+        let mut amount_to_settle = amount;
+        let aggregator_fee = if rate == 100 {
+            require!(sender_fee > 0, GatewayError::SenderFeeIsZero);
+            0
+        } else {
+            let provider_to_aggregator_fx = ctx
+                .accounts
+                .token_config
+                .fee_settings
+                .provider_to_aggregator_fx;
+            require!(
+                provider_to_aggregator_fx > 0,
+                GatewayError::TokenFeeSettingsNotConfigured
+            );
+            let fee = mul_div_u64(amount, provider_to_aggregator_fx, config.max_bps)?;
+            if fee > 0 {
+                amount_to_settle = amount_to_settle
+                    .checked_sub(fee)
+                    .ok_or(GatewayError::MathOverflow)?;
+                transfer_from_vault(
+                    fee,
+                    &ctx.accounts.vault_token_account,
+                    &ctx.accounts.treasury_token_account,
+                    &ctx.accounts.vault_authority,
+                    &ctx.accounts.token_program,
+                    ctx.bumps.vault_authority,
+                )?;
+            }
+            fee
+        };
+
+        let order = &mut ctx.accounts.order;
+        order.order_id = order_id;
+        order.sender = recipient;
+        order.token = ctx.accounts.mint.key();
+        order.sender_fee_recipient = sender_fee_recipient;
+        order.sender_fee = sender_fee;
+        order.protocol_fee = aggregator_fee;
+        order.is_fulfilled = true;
+        order.is_refunded = false;
+        order.refund_address = Pubkey::default();
+        order.current_bps = 0;
+        order.amount = amount_to_settle;
+        order.bump = ctx.bumps.order;
+
+        transfer_from_vault(
+            amount_to_settle,
+            &ctx.accounts.vault_token_account,
+            &ctx.accounts.recipient_token_account,
+            &ctx.accounts.vault_authority,
+            &ctx.accounts.token_program,
+            ctx.bumps.vault_authority,
+        )?;
+
+        if sender_fee != 0 {
+            if aggregator_fee == 0 {
+                handle_local_transfer_fee_splitting(
+                    order,
+                    config.max_bps,
+                    &ctx.accounts.token_config.fee_settings,
+                    config.max_bps,
+                    &ctx.accounts.sender_fee_recipient_token_account,
+                    &ctx.accounts.liquidity_provider_token_account,
+                    &ctx.accounts.treasury_token_account,
+                    &ctx.accounts.vault_token_account,
+                    &ctx.accounts.vault_authority,
+                    &ctx.accounts.token_program,
+                    ctx.bumps.vault_authority,
+                )?;
+            } else {
+                handle_fx_transfer_fee_splitting(
+                    order,
+                    &ctx.accounts.token_config.fee_settings,
+                    config.max_bps,
+                    &ctx.accounts.sender_fee_recipient_token_account,
+                    &ctx.accounts.treasury_token_account,
+                    &ctx.accounts.vault_token_account,
+                    &ctx.accounts.vault_authority,
+                    &ctx.accounts.token_program,
+                    ctx.bumps.vault_authority,
+                )?;
+            }
+        }
+
+        emit!(SettleIn {
+            order_id,
+            liquidity_provider: ctx.accounts.liquidity_provider.key(),
+            recipient,
+            amount: amount_to_settle,
+            token: ctx.accounts.mint.key(),
+            aggregator_fee,
+            rate,
         });
         Ok(())
     }
@@ -446,6 +607,10 @@ pub mod gateway {
 
         emit!(OrderRefunded { fee, order_id });
         Ok(())
+    }
+
+    pub fn get_aggregator(ctx: Context<GetConfig>) -> Result<Pubkey> {
+        Ok(ctx.accounts.config.aggregator)
     }
 }
 
@@ -580,7 +745,7 @@ pub struct CreateOrder<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Settle<'info> {
+pub struct SettleOutCtx<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     pub mint: Account<'info, Mint>,
@@ -665,6 +830,75 @@ pub struct Refund<'info> {
     pub refund_token_account: Account<'info, TokenAccount>,
     pub aggregator: Signer<'info>,
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(order_id: [u8; 32], sender_fee_recipient: Pubkey, recipient: Pubkey)]
+pub struct SettleInCtx<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    pub mint: Account<'info, Mint>,
+    #[account(
+        seeds = [TOKEN_CONFIG_SEED, mint.key().as_ref()],
+        bump = token_config.bump,
+        constraint = token_config.mint == mint.key() @ GatewayError::TokenConfigMintMismatch
+    )]
+    pub token_config: Account<'info, TokenConfig>,
+    #[account(
+        init,
+        payer = liquidity_provider,
+        space = 8 + Order::LEN,
+        seeds = [ORDER_SEED, order_id.as_ref()],
+        bump
+    )]
+    pub order: Account<'info, Order>,
+    /// CHECK: PDA authority for token vaults.
+    #[account(seeds = [VAULT_AUTHORITY_SEED], bump)]
+    pub vault_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        constraint = liquidity_provider_token_account.owner == liquidity_provider.key() @ GatewayError::LiquidityProviderTokenOwnerMismatch,
+        constraint = liquidity_provider_token_account.mint == mint.key() @ GatewayError::OrderMintMismatch
+    )]
+    pub liquidity_provider_token_account: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = liquidity_provider,
+        associated_token::mint = mint,
+        associated_token::authority = vault_authority
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = treasury_token_account.owner == config.treasury @ GatewayError::TreasuryTokenOwnerMismatch,
+        constraint = treasury_token_account.mint == mint.key() @ GatewayError::OrderMintMismatch
+    )]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+    /// CHECK: Recipient owner check is enforced on token account.
+    pub recipient_owner: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        constraint = recipient_owner.key() == recipient @ GatewayError::RecipientOwnerMismatch,
+        constraint = recipient_token_account.owner == recipient_owner.key() @ GatewayError::RecipientTokenOwnerMismatch,
+        constraint = recipient_token_account.mint == mint.key() @ GatewayError::OrderMintMismatch
+    )]
+    pub recipient_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = sender_fee_recipient_token_account.mint == mint.key() @ GatewayError::OrderMintMismatch
+    )]
+    pub sender_fee_recipient_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub liquidity_provider: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct GetConfig<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
 }
 
 #[account]
@@ -768,12 +1002,23 @@ pub struct OrderCreated {
 }
 
 #[event]
-pub struct OrderSettled {
+pub struct SettleOut {
     pub split_order_id: [u8; 32],
     pub order_id: [u8; 32],
     pub liquidity_provider: Pubkey,
     pub settle_percent: u64,
     pub rebate_percent: u64,
+}
+
+#[event]
+pub struct SettleIn {
+    pub order_id: [u8; 32],
+    pub liquidity_provider: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub token: Pubkey,
+    pub aggregator_fee: u64,
+    pub rate: u64,
 }
 
 #[event]
@@ -784,6 +1029,7 @@ pub struct OrderRefunded {
 
 #[event]
 pub struct SenderFeeTransferred {
+    pub order_id: [u8; 32],
     pub sender: Pubkey,
     pub amount: u64,
 }
@@ -880,6 +1126,10 @@ pub enum GatewayError {
     SenderFeeTokenOwnerMismatch,
     #[msg("RefundTokenOwnerMismatch")]
     RefundTokenOwnerMismatch,
+    #[msg("RecipientTokenOwnerMismatch")]
+    RecipientTokenOwnerMismatch,
+    #[msg("RecipientOwnerMismatch")]
+    RecipientOwnerMismatch,
 }
 
 fn matches_word(what: &[u8; 32], expected: &[u8]) -> bool {
@@ -998,6 +1248,7 @@ fn handle_local_transfer_fee_splitting<'info>(
     }
 
     emit!(SenderFeeTransferred {
+        order_id: order.order_id,
         sender: order.sender_fee_recipient,
         amount: if order.current_bps == 0 {
             sender_amount
@@ -1064,6 +1315,7 @@ fn handle_fx_transfer_fee_splitting<'info>(
     }
 
     emit!(SenderFeeTransferred {
+        order_id: order.order_id,
         sender: order.sender_fee_recipient,
         amount: sender_amount,
     });
