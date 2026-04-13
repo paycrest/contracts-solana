@@ -1,0 +1,33 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "Solana smart contracts for Paycrest protocol",
+  "private": true,
+  "scripts": {
+    "build:program": "cargo build --manifest-path programs/gateway/Cargo.toml",
+    "test:program": "cargo test",
+    "test": "npm run test:program && mocha -r ts-node/register tests/**/*.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paycrest/contracts-solana.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "AGPL-3.0",
+  "bugs": {
+    "url": "https://github.com/paycrest/contracts-solana/issues"
+  },
+  "homepage": "https://github.com/paycrest/contracts-solana#readme",
+  "devDependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}
