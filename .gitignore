@@ -1,0 +1,21 @@
+# Dependencies & Build Outputs
+node_modules/
+target/
+.anchor/
+.program-ledger/
+dist/
+
+# Logs and runtime errors
+yarn-error.log
+npm-debug.log*
+*.log
+
+# Sensitive Data & Solana Keypairs
+**/*-keypair.json
+.env
+.env.*
+secret.json
+
+# OS specific files
+.DS_Store
+Thumbs.db
