@@ -19,6 +19,16 @@ use pinocchio::{error::ProgramError, AccountView, Address, ProgramResult};
 use errors::GatewayError;
 
 #[cfg(not(feature = "no-entrypoint"))]
+solana_security_txt::security_txt! {
+    name: "Paycrest Gateway",
+    project_url: "https://paycrest.io",
+    contacts: "email:engineering@paycrest.io",
+    policy: "Report suspected vulnerabilities to engineering@paycrest.io. Please include the program id, a description of the issue, and reproduction steps. We ask that you give us a reasonable window to investigate and remediate before any public disclosure.",
+    preferred_languages: "en",
+    source_code: "https://github.com/paycrest/contracts-solana"
+}
+
+#[cfg(not(feature = "no-entrypoint"))]
 mod entrypoint {
     use super::process_instruction;
 
