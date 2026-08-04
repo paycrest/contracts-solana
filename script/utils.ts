@@ -100,22 +100,41 @@ export function getProgramId(network: string): PublicKey {
  */
 export async function updateConfigFile(network: string, programId: string): Promise<void> {
   const configFilePath = path.join(__dirname, "config.ts");
-  let content = await fs.promises.readFile(configFilePath, "utf-8");
+  const original = await fs.promises.readFile(configFilePath, "utf-8");
+  let content = original;
 
+  // Network keys are only quoted in config.ts when they aren't valid JS
+  // identifiers (e.g. "mainnet-beta" needs quotes, `devnet` doesn't) — the
+  // key itself may appear either way, so match both.
+  const keyPattern = `"?${network}"?`;
   const programIdLine = `programId: "${programId}"`;
-  const existing = new RegExp(
-    `("${network}":\\s*{(?:(?!\\n  },)[\\s\\S])*?)programId:\\s*"[^"]*"`,
-    "m"
-  );
+  const existing = new RegExp(`(${keyPattern}:\\s*{(?:(?!\\n  },)[\\s\\S])*?)programId:\\s*"[^"]*"`, "m");
 
   if (existing.test(content)) {
     content = content.replace(existing, `$1${programIdLine}`);
   } else {
-    const insertAt = new RegExp(
-      `("${network}":\\s*{[\\s\\S]*?supportedTokens:\\s*{[\\s\\S]*?}\\s*,)\\s*(\\n\\s*},)`,
-      "m"
+    // Insert as the first property right after the network's opening
+    // brace, rather than hunting for "the right" closing brace among
+    // `supportedTokens`'s own nested objects — a non-greedy match for the
+    // latter previously landed on the first `}` it found, which was
+    // `USDC: { ... }`'s, not `supportedTokens`'s, and silently produced
+    // invalid TypeScript (programId nested inside supportedTokens).
+    const openBrace = new RegExp(`(${keyPattern}:\\s*{)`, "m");
+    content = content.replace(openBrace, `$1\n    ${programIdLine},`);
+  }
+
+  // `String.replace` silently no-ops and returns the input unchanged if
+  // the pattern never matched — don't report success in that case, the
+  // way this function used to (it printed "Updated" for devnet while
+  // writing back the exact same content it read).
+  if (content === original) {
+    throw new Error(
+      `updateConfigFile: no match for network "${network}" in config.ts — file was not modified. ` +
+        `Add "programId: \\"${programId}\\"" to the ${network} block manually.`
     );
-    content = content.replace(insertAt, `$1\n    ${programIdLine},$2`);
+  }
+  if (!content.includes(programIdLine)) {
+    throw new Error(`updateConfigFile: replacement ran but "${programIdLine}" is not present in the result.`);
   }
 
   await fs.promises.writeFile(configFilePath, content, "utf-8");

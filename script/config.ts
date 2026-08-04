@@ -53,6 +53,7 @@ export const NETWORKS: { [network: string]: NetworkConfig } = {
     rpcUrl: process.env.SOLANA_DEVNET_RPC_URL || "https://api.devnet.solana.com",
     explorerUrl: "https://explorer.solana.com",
     chainId: 900_002,
+    programId: "BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U",
     supportedTokens: {
       // Devnet USDC (Circle's official devnet mint). Replace with a local
       // test mint if you need one that isn't rate-limited.

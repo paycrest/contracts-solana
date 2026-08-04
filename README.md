@@ -25,6 +25,37 @@ and compiles cleanly to a deployable `.so`. Verified so far:
   of the Rust program's own (de)serializers per D13. `npx tsc --noEmit`
   passes clean, and `getDeployerInfo`/`checkStatus` have been run against
   live devnet RPC to confirm the runtime logic works, not just the types.
+- **Deployed and verified on devnet.** Program id
+  `BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U`, deployed and initialized
+  via `script/deploy.ts`, then confirmed with the full `update-addresses` /
+  `set-tokens` / `set-fee-settings` / `check-status` pipeline against real
+  devnet RPC. Reproducibly built and hash-verified against `solana-verify`:
+
+  ```bash
+  solana-verify build --library-name paycrest_gateway \
+    --base-image solanafoundation/solana-verifiable-build:4.0.3
+  solana-verify get-program-hash --url https://api.devnet.solana.com \
+    BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U
+  # both hashes: bf4b0471e124485e1f90446dfcf3fa2840fa0b6730405386f3913059d030d71d
+  ```
+
+  Two things worth knowing if you reproduce this:
+  - `solana-verify build`'s **default** base image (auto-selected as
+    "Solana version 3.0.1") bundles a Solana-tools rustc too old for
+    Pinocchio's MSRV (`pinocchio`/`pinocchio-token`/etc. require rustc
+    1.89+). Pass `--base-image solanafoundation/solana-verifiable-build:4.0.3`
+    (or a comparably recent tag) explicitly.
+  - `Cargo.lock` pins `zeroize` to `1.8.1`, not whatever your local
+    toolchain would otherwise resolve. A locally newer rustc (this repo
+    was built with 1.97.1) will happily resolve `zeroize 1.9.0`, which
+    requires `edition2024` — unsupported by the verifiable-build image's
+    older bundled cargo. Don't `cargo update -p zeroize` without checking
+    this still holds.
+  - Confirmed empirically, not just asserted: after redeploying the
+    reproducible binary via `script/upgrade.ts`, `Config`/`TokenConfig`
+    state (owner, treasury, aggregator, chain_id, token support) was
+    unaffected — matching D11's claim that upgrades don't touch account
+    data.
 
 **Not yet done** (see `docs/PLAN.md` §6 "Phasing" and §7 "Open items"):
 Mollusk/LiteSVM coverage for `create_order`/`settle_out`/`settle_in`/`refund`
