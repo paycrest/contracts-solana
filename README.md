@@ -29,17 +29,37 @@ and compiles cleanly to a deployable `.so`. Verified so far:
   `BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U`, deployed and initialized
   via `script/deploy.ts`, then confirmed with the full `update-addresses` /
   `set-tokens` / `set-fee-settings` / `check-status` pipeline against real
-  devnet RPC. Reproducibly built and hash-verified against `solana-verify`:
+  devnet RPC. Reproducibly built and hash-verified twice (once pre-
+  `security.txt`, once after) against `solana-verify`, including a
+  from-scratch clone of the pushed GitHub commit (not just the local
+  working copy):
 
   ```bash
-  solana-verify build --library-name paycrest_gateway \
-    --base-image solanafoundation/solana-verifiable-build:4.0.3
-  solana-verify get-program-hash --url https://api.devnet.solana.com \
-    BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U
-  # both hashes: bf4b0471e124485e1f90446dfcf3fa2840fa0b6730405386f3913059d030d71d
+  solana-verify verify-from-repo -u https://api.devnet.solana.com \
+    --program-id BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U \
+    https://github.com/paycrest/contracts-solana \
+    --library-name paycrest_gateway \
+    --base-image solanafoundation/solana-verifiable-build:4.0.3 \
+    --commit-hash 3f06dcf595d4fffef46817aca0c1400515b644e6
+  # Executable Program Hash from repo: 1df7285ee108e9300da2a9d95fd35bc74433dcd6fb8a32c89ba8d26d91164b3c
+  # On-chain Program Hash:            1df7285ee108e9300da2a9d95fd35bc74433dcd6fb8a32c89ba8d26d91164b3c
+  # Program hash matches ✅
   ```
 
-  Two things worth knowing if you reproduce this:
+  An on-chain verify PDA recording this (git URL, commit, build args) is
+  publicly queryable: `solana-verify list-program-pdas --program-id
+  BoSMnjq5yfEbGYDAm9QMDwYS1SU2avudcc7JqBKNw77U -u
+  https://api.devnet.solana.com`. Note that OtterSec's *remote* verification
+  service — the thing that actually populates Explorer's green "Verified"
+  checkmark — only processes **mainnet** programs; there is no equivalent
+  badge for devnet, regardless of how the program was built. The PDA above
+  is the real, checkable evidence for a devnet deployment.
+
+  The program also embeds `security.txt` (contact:
+  `engineering@paycrest.io`) — confirmed present in the compiled `.so` via
+  `strings`, not just asserted from source.
+
+  Things worth knowing if you reproduce this:
   - `solana-verify build`'s **default** base image (auto-selected as
     "Solana version 3.0.1") bundles a Solana-tools rustc too old for
     Pinocchio's MSRV (`pinocchio`/`pinocchio-token`/etc. require rustc
@@ -51,11 +71,16 @@ and compiles cleanly to a deployable `.so`. Verified so far:
     requires `edition2024` — unsupported by the verifiable-build image's
     older bundled cargo. Don't `cargo update -p zeroize` without checking
     this still holds.
+  - `solana-verify get-program-hash` (and even a raw `solana program dump`)
+    can return stale results for a few seconds right after an upgrade on
+    the public devnet RPC — a mismatch immediately post-upgrade isn't
+    necessarily real; the transaction's own status (`solana confirm -v
+    <sig>`) is the authoritative check, and the hash caught up on retry.
   - Confirmed empirically, not just asserted: after redeploying the
-    reproducible binary via `script/upgrade.ts`, `Config`/`TokenConfig`
-    state (owner, treasury, aggregator, chain_id, token support) was
-    unaffected — matching D11's claim that upgrades don't touch account
-    data.
+    reproducible binary via `script/upgrade.ts` **twice**, `Config`/
+    `TokenConfig` state (owner, treasury, aggregator, chain_id, token
+    support) was unaffected both times — matching D11's claim that
+    upgrades don't touch account data.
 
 **Not yet done** (see `docs/PLAN.md` §6 "Phasing" and §7 "Open items"):
 Mollusk/LiteSVM coverage for `create_order`/`settle_out`/`settle_in`/`refund`
