@@ -1,0 +1,35 @@
+[package]
+name = "paycrest-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Paycrest Gateway program (Solana)"
+license = "UNLICENSED"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "paycrest_gateway"
+
+[dependencies]
+pinocchio = { version = "0.11.2", features = ["account-resize", "cpi"] }
+pinocchio-system = { version = "0.6.1", features = ["account-resize"] }
+pinocchio-token = "0.7.0"
+pinocchio-log = "0.5.1"
+# Enables Address::{create_program_address,find_program_address} to
+# type-check and run under `cargo check`/`cargo test` on host (not just
+# under `cargo build-sbf`). On-chain, PDA derivation still goes through the
+# `sol_*` syscalls regardless of this feature — see solana-address's own
+# `#[cfg(not(target_os = "solana"))]` branch — so this only affects host
+# tooling, never the deployed binary.
+solana-address = { version = "2", features = ["curve25519"] }
+
+[dev-dependencies]
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_os, values("solana"))'] }
+
+[features]
+no-entrypoint = []
+
+[profile.release]
+overflow-checks = true

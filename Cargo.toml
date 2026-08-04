@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["program", "tests/mollusk"]
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
