@@ -19,14 +19,22 @@ and compiles cleanly to a deployable `.so`. Verified so far:
 - Mollusk end-to-end smoke tests (`tests/mollusk`) driving the *compiled*
   binary — proves the entrypoint, dispatch, System Program CPI, and
   byte-level state layout actually work, not just that the source compiles.
+- `script/` — a TypeScript deploy + admin CLI (`@solana/web3.js`, mirroring
+  `contracts-starknet/script/*.ts`'s structure and npm-script names) with
+  its own hand-written instruction encoders and state decoders, independent
+  of the Rust program's own (de)serializers per D13. `npx tsc --noEmit`
+  passes clean, and `getDeployerInfo`/`checkStatus` have been run against
+  live devnet RPC to confirm the runtime logic works, not just the types.
 
 **Not yet done** (see `docs/PLAN.md` §6 "Phasing" and §7 "Open items"):
 Mollusk/LiteSVM coverage for `create_order`/`settle_out`/`settle_in`/`refund`
 against real SPL Token accounts; parity vectors ported from the existing
 Cairo (`contracts-starknet/tests/test_gateway.cairo`) and JS
 (`contracts/test/gateway/*.test.js`) suites; the independent TypeScript
-client encoder (`ts/`); the hand-maintained `idl/gateway.json`; deploy/admin
-scripts (`script/`); CU budget assertions in CI; audit.
+*client SDK* for the four core instructions (`ts/` — `script/` only covers
+admin/settings, not `create_order`'s Address Lookup Table handling per
+D6/O9); the hand-maintained `idl/gateway.json`; CU budget assertions in CI;
+audit.
 
 ## Layout
 
@@ -35,9 +43,9 @@ program/          the on-chain program (Pinocchio, no_std)
 tests/mollusk/     Mollusk-driven tests against the compiled .so
 tests/litesvm/     (planned) multi-instruction end-to-end flows
 tests/vectors/     (planned) parity vectors ported from Cairo/JS suites
-ts/                (planned) independent TS client + tests
+script/            deploy + admin CLI (TypeScript, @solana/web3.js)
+ts/                (planned) independent client SDK for core instructions
 idl/               (planned) hand-maintained gateway.json
-script/            (planned) deploy + settings tooling
 docs/PLAN.md       decision log and design rationale
 ```
 
