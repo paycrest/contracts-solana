@@ -76,7 +76,7 @@ impl OrderCreated<'_> {
 pub struct SettleOutEvent {
     pub split_order_id: [u8; 32],
     pub order_id: [u8; 32],
-    pub liquidity_provider: Address,
+    pub signer: Address,
     pub settle_percent: u64,
     pub rebate_percent: u64,
 }
@@ -87,7 +87,7 @@ impl SettleOutEvent {
         buf.extend_from_slice(&crate::constants::EVT_SETTLE_OUT);
         push_bytes32(&mut buf, &self.split_order_id);
         push_bytes32(&mut buf, &self.order_id);
-        push_address(&mut buf, &self.liquidity_provider);
+        push_address(&mut buf, &self.signer);
         push_u64(&mut buf, self.settle_percent);
         push_u64(&mut buf, self.rebate_percent);
         emit(&buf);
@@ -96,7 +96,7 @@ impl SettleOutEvent {
 
 pub struct SettleInEvent {
     pub order_id: [u8; 32],
-    pub liquidity_provider: Address,
+    pub signer: Address,
     pub recipient: Address,
     pub amount: u64,
     pub mint: Address,
@@ -110,7 +110,7 @@ impl SettleInEvent {
         let mut buf = Vec::with_capacity(8 + 32 + 32 + 32 + 8 + 32 + 8 + 8 + 8);
         buf.extend_from_slice(&crate::constants::EVT_SETTLE_IN);
         push_bytes32(&mut buf, &self.order_id);
-        push_address(&mut buf, &self.liquidity_provider);
+        push_address(&mut buf, &self.signer);
         push_address(&mut buf, &self.recipient);
         push_u64(&mut buf, self.amount);
         push_address(&mut buf, &self.mint);

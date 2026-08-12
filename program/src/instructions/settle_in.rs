@@ -1,5 +1,5 @@
 //! `settle_in` — mirrors `Gateway.settleIn` / `_bookSettleInAndPayFees`
-//! (D16). Permissionless: any LP may call it. The Order PDA is allocated
+//! (D16). Permissionless: any provider signer may call it. The Order PDA is allocated
 //! directly at tombstone size (16 bytes) — a pay-in order is terminal the
 //! instant it exists, so there is no live-then-shrink step (D8/D16). Field
 //! values EVM would persist to the `Order` struct (`sender`, `amount`,
@@ -7,9 +7,12 @@
 //! nothing reads them from storage afterward.
 //!
 //! Order of operations mirrors EVM's `settleIn` exactly: validate, pull
-//! funds in from the LP, book (create the tombstone — this is what arms
+//! funds in from the signer, book (create the tombstone — this is what arms
 //! `OrderAlreadyExists` for any future replay of this `order_id`), *then*
 //! pay out treasury/rebate/recipient, then split the sender fee.
+//!
+//! Order PDA rent is funded by `rent_payer` (typically the aggregator hot
+//! wallet that also acts as the transaction fee payer), not `signer`.
 
 use pinocchio::{
     cpi::{Seed, Signer},
@@ -40,8 +43,9 @@ const IX_LEN: usize = 1 + 1 + 32 + 8 + 32 + 8 + 32 + 8 + 8;
 
 pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) -> Result<(), ProgramError> {
     let [
-        lp_signer,
-        lp_source_token_account,
+        rent_payer,
+        signer,
+        source_token_account,
         order_ai,
         config_ai,
         token_config_ai,
@@ -76,7 +80,8 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     let rate = u64::from_le_bytes(data[114..122].try_into().unwrap());
     let rebate_percent = u64::from_le_bytes(data[122..130].try_into().unwrap());
 
-    require_signer(lp_signer).map_err(err)?;
+    require_signer(rent_payer).map_err(err)?;
+    require_signer(signer).map_err(err)?;
     if token_program_ai.address().as_array() != TOKEN_PROGRAM_ID.as_array() {
         return Err(err(GatewayError::InvalidTokenProgram));
     }
@@ -125,6 +130,35 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     crate::token::assert_existing_token_account_for(recipient_token_account, mint_ai.address(), &recipient)
         .map_err(err)?;
 
+    // Bind the fee destinations to their configured owners.
+    //
+    // `settle_in` is permissionless and its transaction is assembled off-chain
+    // (by the provider signer, in the payin flow), so the account list is
+    // attacker-controlled. Instruction *data* carries the treasury/sender-fee
+    // amounts, but the account list decides where those tokens actually land —
+    // without these checks a caller can point either at their own token account
+    // and keep the protocol fee while the order still settles correctly for the
+    // recipient and emits a valid SettleIn event. `refund` already binds
+    // treasury this way; this keeps the three instructions consistent.
+    crate::token::assert_existing_token_account_for(
+        treasury_token_account,
+        mint_ai.address(),
+        &config.treasury,
+    )
+    .map_err(err)?;
+
+    // Only meaningful when a sender fee is actually split out; when
+    // `sender_fee == 0` the account is never debited and may legitimately be a
+    // placeholder.
+    if sender_fee != 0 {
+        crate::token::assert_existing_token_account_for(
+            sender_fee_recipient_token_account,
+            mint_ai.address(),
+            &sender_fee_recipient,
+        )
+        .map_err(err)?;
+    }
+
     let vault_authority =
         crate::pda::create_pda(&[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id).map_err(err)?;
     verify_pda(vault_authority_ai.address(), &[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id)
@@ -134,20 +168,20 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidTokenAccountOwner));
     }
 
-    let source_info = crate::token::read_token_account(lp_source_token_account).map_err(err)?;
-    if !addresses_eq(&source_info.mint, mint_ai.address()) || !addresses_eq(&source_info.owner, lp_signer.address())
+    let source_info = crate::token::read_token_account(source_token_account).map_err(err)?;
+    if !addresses_eq(&source_info.mint, mint_ai.address()) || !addresses_eq(&source_info.owner, signer.address())
     {
         return Err(err(GatewayError::InvalidTokenAccountOwner));
     }
 
     verify_pda(order_ai.address(), &[SEED_ORDER, &order_id], order_bump, program_id).map_err(err)?;
 
-    // -- Inbound: LP -> vault, amount + sender_fee --
+    // -- Inbound: signer -> vault, amount + sender_fee --
     let total_in = amount.checked_add(sender_fee).ok_or(err(GatewayError::MathOverflow))?;
     Transfer::<&AccountView, pinocchio_token::TokenProgram>::new(
-        lp_source_token_account,
+        source_token_account,
         vault_token_account,
-        lp_signer,
+        signer,
         total_in,
     )
     .invoke()?;
@@ -176,7 +210,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         order_ai,
         OrderTombstone::LEN,
         program_id,
-        lp_signer,
+        rent_payer,
         None,
         &[Signer::from(&order_seeds)],
     )?;
@@ -207,7 +241,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     if rebate_amount > 0 {
         Transfer::<&AccountView, pinocchio_token::TokenProgram>::new(
             vault_token_account,
-            lp_source_token_account,
+            source_token_account,
             vault_authority_ai,
             rebate_amount,
         )
@@ -261,7 +295,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
 
     SettleInEvent {
         order_id,
-        liquidity_provider: *lp_signer.address(),
+        signer: *signer.address(),
         recipient,
         amount: amount_to_settle,
         mint: *mint_ai.address(),

@@ -154,9 +154,9 @@ A full-field tombstone shrinks only the 32 bytes of `reserved` padding — ~4.5�
 
 Terminal order data remains fully recoverable from `SettleOut` / `SettleIn` / `OrderRefunded` events, which is how the indexer reconstructs state on every chain already.
 
-**No per-order `rent_payer` field.** Excess lamports on shrink go to the current `Config.aggregator`.
+**No `rent_payer` field on the Order account.** Excess lamports on shrink go to the current `Config.aggregator`.
 
-**Who funds rent at create:** the fee payer sponsors Order PDA rent — typically the aggregator. Round-trip: sponsor 2,310,720 at create → reclaim 1,308,480 at terminalization → **1,002,240 lamports (~0.001 SOL, ~$0.20) locked permanently per order**.
+**Who funds rent:** a dedicated **`rent_payer` signer** on each instruction (writable, sponsors Order PDA creation). On `create_order` and off-ramp terminalization this is the fee payer; on **`settle_in` it is separate from `lp_signer`** so the LP supplies USDC only and the aggregator hot wallet pays tombstone rent. Round-trip on pay-out: sponsor 2,310,720 at create → reclaim 1,308,480 at terminalization → **1,002,240 lamports (~0.001 SOL, ~$0.20) locked permanently per order**. Pay-in allocates directly at tombstone size, so **1,002,240 lamports are locked from `rent_payer` with no reclaim**.
 
 Combined with dropping the nonce counter PDA (D3), per-order permanent rent falls from 0.0031 SOL to 0.0010 SOL — at 1,000 orders/day, ~1.0 SOL/day instead of ~3.1.
 
@@ -319,6 +319,8 @@ Core: `create_order`, `settle_out`, `settle_in`, `refund`.
 **Pause:** only `create_order` and `settle_in` check `paused`; `settle_out` / `refund` do not.
 
 **`create_order` (sketch):** fee payer (writable, sponsors rent) + depositor token-authority signer + depositor source ATA + Order PDA + vault ATA + config + token config + mint + refund ATA (read-only, D10) + token program + system program.
+
+**`settle_in` (sketch):** rent payer (writable signer, sponsors Order tombstone rent — typically aggregator) + LP token-authority signer + LP source ATA + Order PDA + config + token config + mint + vault ATA + vault authority + recipient ATA + treasury ATA + sender-fee-recipient ATA + token program + system program.
 
 Ix data: `nonce`, rate, amount, sender fee, refund/fee-recipient pubkeys, message-hash bytes. `order_id` is **not** in ix data — the program recomputes `keccak(depositor, nonce, chain_id)` and asserts the passed Order PDA derives from it.
 

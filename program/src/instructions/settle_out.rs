@@ -38,7 +38,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         mint_ai,
         vault_token_account,
         vault_authority_ai,
-        liquidity_provider_token_account,
+        signer_token_account,
         treasury_token_account,
         sender_fee_recipient_token_account,
         token_program_ai,
@@ -107,6 +107,21 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidMint));
     }
 
+    // Bind the fee destinations to their configured owners, matching `refund`
+    // and `settle_in`. `settle_out` is aggregator-only, so this is
+    // defence-in-depth rather than a guard against an untrusted caller — but a
+    // mis-derived treasury ATA in the aggregator's transaction builder would
+    // otherwise send protocol fees somewhere else and still succeed on-chain.
+    crate::token::assert_existing_token_account_for(
+        treasury_token_account,
+        mint_ai.address(),
+        &config.treasury,
+    )
+    .map_err(err)?;
+
+    // The sender-fee recipient is only debited on the final settle; that check
+    // lives next to the transfer that uses it, below.
+
     // -- currentOrderBPS captured before decrement, exactly like EVM's
     // local `currentOrderBPS` --
     let current_order_bps = order.current_bps;
@@ -116,17 +131,17 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     let new_bps = checked_sub(current_order_bps, settle_percent).map_err(err)?;
     let is_final = new_bps == 0;
 
-    let mut lp_amount = mul_div_floor(order.amount, settle_percent, current_order_bps).map_err(err)?;
-    let new_order_amount = checked_sub(order.amount, lp_amount).map_err(err)?;
+    let mut signer_amount = mul_div_floor(order.amount, settle_percent, current_order_bps).map_err(err)?;
+    let new_order_amount = checked_sub(order.amount, signer_amount).map_err(err)?;
 
     let mut treasury_fee = 0u64;
     if token_config.provider_to_treasury > 0 {
-        treasury_fee = mul_div_floor(lp_amount, token_config.provider_to_treasury, config.max_bps).map_err(err)?;
-        lp_amount = checked_sub(lp_amount, treasury_fee).map_err(err)?;
+        treasury_fee = mul_div_floor(signer_amount, token_config.provider_to_treasury, config.max_bps).map_err(err)?;
+        signer_amount = checked_sub(signer_amount, treasury_fee).map_err(err)?;
         if rebate_percent > 0 {
             let rebate_amount = mul_div_floor(treasury_fee, rebate_percent, config.max_bps).map_err(err)?;
             treasury_fee = checked_sub(treasury_fee, rebate_amount).map_err(err)?;
-            lp_amount = checked_add(lp_amount, rebate_amount).map_err(err)?;
+            signer_amount = checked_add(signer_amount, rebate_amount).map_err(err)?;
         }
     }
 
@@ -144,13 +159,23 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     }
     Transfer::<&AccountView, pinocchio_token::TokenProgram>::new(
         vault_token_account,
-        liquidity_provider_token_account,
+        signer_token_account,
         vault_authority_ai,
-        lp_amount,
+        signer_amount,
     )
     .invoke_signed(&[Signer::from(&vault_seeds)])?;
 
     if is_final && order.sender_fee > 0 {
+        // Bind the destination before paying out: the account is only debited
+        // on this branch, so validating it earlier would reject partial settles
+        // that legitimately pass a placeholder.
+        crate::token::assert_existing_token_account_for(
+            sender_fee_recipient_token_account,
+            mint_ai.address(),
+            &order.sender_fee_recipient,
+        )
+        .map_err(err)?;
+
         let sender_fee_treasury_amount =
             mul_div_floor(order.sender_fee, token_config.sender_to_treasury, config.max_bps).map_err(err)?;
         let sender_amount = checked_sub(order.sender_fee, sender_fee_treasury_amount).map_err(err)?;
@@ -203,7 +228,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     SettleOutEvent {
         split_order_id,
         order_id,
-        liquidity_provider: *liquidity_provider_token_account.address(),
+        signer: *signer_token_account.address(),
         settle_percent,
         rebate_percent,
     }

@@ -157,6 +157,54 @@ export function findVaultAuthorityPda(programId: PublicKey): [PublicKey, number]
   return PublicKey.findProgramAddressSync([Buffer.from("vault_authority")], programId);
 }
 
+export function findOrderPda(programId: PublicKey, orderId: Buffer): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from("order"), orderId], programId);
+}
+
+/** Legacy SPL Token program — pinned in program (D9). */
+export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+/** Anchor-compatible event discriminator from program/src/constants.rs */
+export const EVT_ORDER_CREATED = Buffer.from([0xe0, 0x01, 0xe5, 0x3f, 0xfe, 0x3c, 0xbe, 0x9f]);
+
+/** Left-pad u64 into 32-byte big-endian word (Solidity uint256). */
+export function u64AsUint256BE(value: bigint | number): Buffer {
+  const buf = Buffer.alloc(32);
+  buf.writeBigUInt64BE(BigInt(value), 24);
+  return buf;
+}
+
+/** keccak256(depositor || uint256(nonce) || uint256(chain_id)) — D3 */
+export function orderIdHash(depositor: PublicKey, nonce: bigint, chainId: bigint): Buffer {
+  const { keccak_256 } = require("js-sha3") as typeof import("js-sha3");
+  const preimage = Buffer.concat([
+    depositor.toBuffer(),
+    u64AsUint256BE(nonce),
+    u64AsUint256BE(chainId),
+  ]);
+  return Buffer.from(keccak_256.array(preimage));
+}
+
+/** Probe PDAs for the first unoccupied nonce (N1). */
+export async function findNextFreeNonce(
+  connection: Connection,
+  programId: PublicKey,
+  depositor: PublicKey,
+  chainId: bigint,
+  maxProbe = 64
+): Promise<{ nonce: bigint; orderPda: PublicKey; orderBump: number; orderId: Buffer }> {
+  for (let n = 1n; n <= BigInt(maxProbe); n++) {
+    const orderId = orderIdHash(depositor, n, chainId);
+    const [orderPda, bump] = findOrderPda(programId, orderId);
+    const info = await connection.getAccountInfo(orderPda);
+    if (info === null) {
+      return { nonce: n, orderPda, orderBump: bump, orderId };
+    }
+  }
+  throw new Error(`no free nonce in 1..${maxProbe} for depositor ${depositor.toBase58()}`);
+}
+
+
 // ---------------------------------------------------------------------
 // Instruction encoders — opcode + field layout must match
 // program/src/lib.rs's Opcode enum and each instructions/admin.rs handler
@@ -174,6 +222,10 @@ enum Opcode {
   Pause = 6,
   Unpause = 7,
   SetCaps = 8,
+  CreateOrder = 9,
+  SettleOut = 10,
+  SettleIn = 11,
+  Refund = 12,
 }
 
 function u64le(value: bigint | number): Buffer {
@@ -231,6 +283,31 @@ export function encodeUnpause(): Buffer {
 export function encodeSetCaps(maxOrderAmount: bigint, globalEscrowCap: bigint): Buffer {
   return Buffer.concat([Buffer.from([Opcode.SetCaps]), u64le(maxOrderAmount), u64le(globalEscrowCap)]);
 }
+
+/** CreateOrder fixed prefix + trailing message blob — see create_order.rs */
+export function encodeCreateOrder(params: {
+  orderBump: number;
+  vaultBump: number;
+  nonce: bigint;
+  amount: bigint;
+  rate: bigint;
+  senderFee: bigint;
+  senderFeeRecipient: PublicKey;
+  refundAddress: PublicKey;
+  messageHash: Buffer;
+}): Buffer {
+  return Buffer.concat([
+    Buffer.from([Opcode.CreateOrder, params.orderBump, params.vaultBump]),
+    u64le(params.nonce),
+    u64le(params.amount),
+    u64le(params.rate),
+    u64le(params.senderFee),
+    params.senderFeeRecipient.toBuffer(),
+    params.refundAddress.toBuffer(),
+    params.messageHash,
+  ]);
+}
+
 
 // ---------------------------------------------------------------------
 // State decoders — offsets must match program/src/state/{config,token_config}.rs

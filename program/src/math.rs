@@ -85,20 +85,20 @@ mod tests {
         let provider_to_treasury: u64 = 500; // 0.5%
         let rebate_percent: u64 = 20_000; // 20%
 
-        let mut lp_amount = mul_div_floor(order_amount, settle_percent, current_bps).unwrap();
-        assert_eq!(lp_amount, 1_000_000);
+        let mut signer_amount = mul_div_floor(order_amount, settle_percent, current_bps).unwrap();
+        assert_eq!(signer_amount, 1_000_000);
 
-        let mut treasury_fee = mul_div_floor(lp_amount, provider_to_treasury, 100_000).unwrap();
+        let mut treasury_fee = mul_div_floor(signer_amount, provider_to_treasury, 100_000).unwrap();
         assert_eq!(treasury_fee, 5_000);
-        lp_amount = checked_sub(lp_amount, treasury_fee).unwrap();
+        signer_amount = checked_sub(signer_amount, treasury_fee).unwrap();
 
         let rebate_amount = mul_div_floor(treasury_fee, rebate_percent, 100_000).unwrap();
         assert_eq!(rebate_amount, 1_000);
         treasury_fee = checked_sub(treasury_fee, rebate_amount).unwrap();
-        lp_amount = checked_add(lp_amount, rebate_amount).unwrap();
+        signer_amount = checked_add(signer_amount, rebate_amount).unwrap();
 
         assert_eq!(treasury_fee, 4_000);
-        assert_eq!(lp_amount, 996_000);
-        assert_eq!(lp_amount + treasury_fee, order_amount);
+        assert_eq!(signer_amount, 996_000);
+        assert_eq!(signer_amount + treasury_fee, order_amount);
     }
 }
