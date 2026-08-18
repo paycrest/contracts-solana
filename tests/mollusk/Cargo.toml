@@ -1,0 +1,16 @@
+[package]
+name = "paycrest-gateway-mollusk-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+mollusk-svm = "=0.14.0"
+solana-account = "4"
+solana-instruction = "3"
+solana-pubkey = "4"
+solana-sdk-ids = "3"
+solana-program-error = "3"
+
+[lib]
+path = "src/lib.rs"

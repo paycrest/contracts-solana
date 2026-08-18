@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# TS scripts / client
+node_modules/
+dist/
+.env
+*.env
+!.env.example
+script/package-lock.json
+.devnet-keys/

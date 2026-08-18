@@ -1,0 +1,36 @@
+{
+  "name": "paycrest-solana-scripts",
+  "version": "1.0.0",
+  "description": "Deployment and configuration scripts for Paycrest Gateway on Solana",
+  "scripts": {
+    "deploy": "ts-node deploy.ts",
+    "set-tokens": "ts-node setSupportedTokens.ts",
+    "set-fee-settings": "ts-node setTokenFeeSettings.ts",
+    "update-addresses": "ts-node updateProtocolAddresses.ts",
+    "upgrade": "ts-node upgrade.ts",
+    "check-status": "ts-node checkStatus.ts",
+    "deployer-info": "ts-node getDeployerInfo.ts",
+    "create-order": "ts-node createOrder.ts",
+    "create-vault-ata": "ts-node createVaultAta.ts"
+  },
+  "keywords": [
+    "solana",
+    "pinocchio",
+    "gateway",
+    "deployment"
+  ],
+  "author": "Paycrest",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "js-sha3": "^0.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
