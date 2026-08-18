@@ -26,10 +26,10 @@ use crate::{
     constants::{LAYOUT_VERSION, SEED_ORDER, SEED_VAULT_AUTHORITY, TOKEN_PROGRAM_ID},
     errors::GatewayError,
     events::SettleInEvent,
-    instructions::{addresses_eq, is_zero_address, require_owned_by_program, require_signer},
+    instructions::{addresses_eq, is_zero_address, load_config, load_token_config, load_vault_authority, require_signer},
     math::{checked_sub, mul_div_floor},
     pda::verify_pda,
-    state::{Config, OrderTombstone, TokenConfig},
+    state::OrderTombstone,
 };
 
 fn err(e: GatewayError) -> ProgramError {
@@ -86,11 +86,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidTokenProgram));
     }
 
-    require_owned_by_program(config_ai, program_id).map_err(err)?;
-    let config = {
-        let d = config_ai.try_borrow().map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        Config::read_from(&d).map_err(err)?
-    };
+    let config = load_config(config_ai, program_id).map_err(err)?;
     if config.paused {
         return Err(err(GatewayError::ContractPaused));
     }
@@ -98,13 +94,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidRebatePercent));
     }
 
-    require_owned_by_program(token_config_ai, program_id).map_err(err)?;
-    let token_config = {
-        let d = token_config_ai
-            .try_borrow()
-            .map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        TokenConfig::read_from(&d).map_err(err)?
-    };
+    let token_config = load_token_config(token_config_ai, mint_ai.address(), program_id).map_err(err)?;
     if !token_config.is_supported {
         return Err(err(GatewayError::TokenNotSupported));
     }
@@ -159,10 +149,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         .map_err(err)?;
     }
 
-    let vault_authority =
-        crate::pda::create_pda(&[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id).map_err(err)?;
-    verify_pda(vault_authority_ai.address(), &[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id)
-        .map_err(err)?;
+    let vault_authority = load_vault_authority(vault_authority_ai, vault_authority_bump, program_id).map_err(err)?;
     let vault_info = crate::token::read_token_account(vault_token_account).map_err(err)?;
     if !addresses_eq(&vault_info.mint, mint_ai.address()) || !addresses_eq(&vault_info.owner, &vault_authority) {
         return Err(err(GatewayError::InvalidTokenAccountOwner));

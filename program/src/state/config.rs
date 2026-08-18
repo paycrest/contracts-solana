@@ -50,8 +50,12 @@ impl Config {
         if read_tag(data) != TAG_CONFIG {
             return Err(GatewayError::InvalidAccountTag);
         }
+        let version = read_u8(data, Self::OFF_VERSION);
+        if version != LAYOUT_VERSION {
+            return Err(GatewayError::InvalidAccountTag);
+        }
         Ok(Self {
-            version: read_u8(data, Self::OFF_VERSION),
+            version,
             bump: read_u8(data, Self::OFF_BUMP),
             paused: read_u8(data, Self::OFF_PAUSED) != 0,
             owner: read_address(data, Self::OFF_OWNER),
@@ -139,6 +143,24 @@ mod tests {
     #[test]
     fn rejects_wrong_length() {
         let buf = [0u8; Config::LEN - 1];
+        assert_eq!(
+            Config::read_from(&buf).unwrap_err(),
+            GatewayError::InvalidAccountTag
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_layout_version() {
+        let cfg = Config::new_initial(
+            255,
+            Address::new_from_array([1u8; 32]),
+            Address::new_from_array([2u8; 32]),
+            Address::new_from_array([3u8; 32]),
+            900_001,
+        );
+        let mut buf = [0u8; Config::LEN];
+        cfg.write_to(&mut buf).unwrap();
+        buf[8] = LAYOUT_VERSION + 1;
         assert_eq!(
             Config::read_from(&buf).unwrap_err(),
             GatewayError::InvalidAccountTag

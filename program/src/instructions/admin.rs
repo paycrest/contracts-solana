@@ -15,19 +15,13 @@ use pinocchio_system::create_account_with_minimum_balance_signed;
 use crate::{
     constants::{SEED_CONFIG, SEED_TOKEN_CONFIG},
     errors::GatewayError,
-    instructions::{addresses_eq, is_zero_address, require_owned_by_program, require_signer},
+    instructions::{addresses_eq, is_zero_address, load_config, require_owned_by_program, require_signer},
     pda::verify_pda,
     state::{Config, TokenConfig},
 };
 
 fn err(e: GatewayError) -> ProgramError {
     ProgramError::from(e)
-}
-
-fn load_config_checked(config_ai: &AccountView, program_id: &Address) -> Result<Config, ProgramError> {
-    require_owned_by_program(config_ai, program_id).map_err(err)?;
-    let data = config_ai.try_borrow().map_err(|_| err(GatewayError::InvalidAccountTag))?;
-    Config::read_from(&data).map_err(err)
 }
 
 fn require_owner(config: &Config, caller: &AccountView) -> Result<(), ProgramError> {
@@ -52,6 +46,12 @@ pub fn initialize(program_id: &Address, accounts: &mut [AccountView], data: &[u8
     }
     let bump = data[0];
     let chain_id = u64::from_le_bytes(data[1..9].try_into().unwrap());
+
+    // A fresh Config PDA is system-owned with zero data. Anything already
+    // allocated at this address was initialized in a prior transaction.
+    if config_ai.lamports() > 0 && config_ai.data_len() > 0 {
+        return Err(err(GatewayError::AlreadyInitialized));
+    }
 
     verify_pda(config_ai.address(), &[SEED_CONFIG], bump, program_id).map_err(err)?;
 
@@ -99,7 +99,7 @@ pub fn update_protocol_address(
     new_addr_bytes.copy_from_slice(&data[1..33]);
     let new_address = Address::new_from_array(new_addr_bytes);
 
-    let mut config = load_config_checked(config_ai, program_id)?;
+    let mut config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
 
     if is_zero_address(&new_address) {
@@ -142,7 +142,7 @@ pub fn transfer_ownership(
     new_owner_bytes.copy_from_slice(data);
     let new_owner = Address::new_from_array(new_owner_bytes);
 
-    let mut config = load_config_checked(config_ai, program_id)?;
+    let mut config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
 
     config.pending_owner = new_owner;
@@ -161,7 +161,7 @@ pub fn accept_ownership(
     };
     require_signer(pending_owner_ai).map_err(err)?;
 
-    let mut config = load_config_checked(config_ai, program_id)?;
+    let mut config = load_config(config_ai, program_id).map_err(err)?;
     if is_zero_address(&config.pending_owner) || !addresses_eq(pending_owner_ai.address(), &config.pending_owner) {
         return Err(err(GatewayError::OnlyPendingOwner));
     }
@@ -185,7 +185,7 @@ fn set_paused(program_id: &Address, accounts: &mut [AccountView], paused: bool) 
     let [owner_ai, config_ai] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
-    let mut config = load_config_checked(config_ai, program_id)?;
+    let mut config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
     config.paused = paused;
     let mut out = config_ai.try_borrow_mut().map_err(|_| err(GatewayError::InvalidAccountTag))?;
@@ -204,7 +204,7 @@ pub fn set_caps(program_id: &Address, accounts: &mut [AccountView], data: &[u8])
     let max_order_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let global_escrow_cap = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
-    let mut config = load_config_checked(config_ai, program_id)?;
+    let mut config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
     config.max_order_amount = max_order_amount;
     config.global_escrow_cap = global_escrow_cap;
@@ -233,7 +233,7 @@ pub fn set_token_support(
     }
     let is_supported = status == 1;
 
-    let config = load_config_checked(config_ai, program_id)?;
+    let config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
 
     verify_pda(
@@ -252,6 +252,16 @@ pub fn set_token_support(
                 .map_err(|_| err(GatewayError::InvalidAccountTag))?;
             TokenConfig::read_from(&d).map_err(err)?
         };
+        verify_pda(
+            token_config_ai.address(),
+            &[SEED_TOKEN_CONFIG, mint_ai.address().as_array()],
+            existing.bump,
+            program_id,
+        )
+        .map_err(err)?;
+        if !addresses_eq(&existing.mint, mint_ai.address()) {
+            return Err(err(GatewayError::InvalidMint));
+        }
         existing.is_supported = is_supported;
         let mut out = token_config_ai
             .try_borrow_mut()
@@ -303,7 +313,7 @@ pub fn set_token_fee_settings(
     let provider_to_treasury = u64::from_le_bytes(data[8..16].try_into().unwrap());
     TokenConfig::validate_bps(sender_to_treasury, provider_to_treasury).map_err(err)?;
 
-    let config = load_config_checked(config_ai, program_id)?;
+    let config = load_config(config_ai, program_id).map_err(err)?;
     require_owner(&config, owner_ai)?;
 
     require_owned_by_program(token_config_ai, program_id).map_err(err)?;
@@ -313,6 +323,13 @@ pub fn set_token_fee_settings(
             .map_err(|_| err(GatewayError::InvalidAccountTag))?;
         TokenConfig::read_from(&d).map_err(err)?
     };
+    verify_pda(
+        token_config_ai.address(),
+        &[SEED_TOKEN_CONFIG, tc.mint.as_array()],
+        tc.bump,
+        program_id,
+    )
+    .map_err(err)?;
     if !tc.is_supported {
         return Err(err(GatewayError::TokenNotSupported));
     }

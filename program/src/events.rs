@@ -76,6 +76,7 @@ impl OrderCreated<'_> {
 pub struct SettleOutEvent {
     pub split_order_id: [u8; 32],
     pub order_id: [u8; 32],
+    /// Liquidity provider wallet — mirrors Solidity `_liquidityProvider`, not the ATA.
     pub signer: Address,
     pub settle_percent: u64,
     pub rebate_percent: u64,

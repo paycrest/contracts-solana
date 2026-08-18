@@ -30,6 +30,10 @@ pub const EVT_TRANSFER_FEE_SPLIT: [u8; 8] = [0x50, 0xa6, 0xbd, 0x4e, 0xa0, 0xa1,
 /// out of `reserved` padding.
 pub const LAYOUT_VERSION: u8 = 1;
 
+/// Maximum serialized X25519 hybrid payload for `create_order` (D6):
+/// 32 (ephemeral pubkey) + 12 (nonce) + 500 (plaintext) + 16 (tag).
+pub const MESSAGE_HASH_MAX_SIZE: usize = 560;
+
 /// `MAX_BPS` from `GatewaySettingManager.sol` — 100% in basis points.
 pub const MAX_BPS: u64 = 100_000;
 

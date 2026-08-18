@@ -14,10 +14,10 @@ use crate::{
     constants::{SEED_ORDER, SEED_VAULT_AUTHORITY, TOKEN_PROGRAM_ID},
     errors::GatewayError,
     events::{SenderFeeTransferredEvent, SettleOutEvent, TransferFeeSplitEvent},
-    instructions::{addresses_eq, require_owned_by_program, require_signer},
+    instructions::{addresses_eq, load_config, load_token_config, load_vault_authority, require_owned_by_program, require_signer},
     math::{checked_add, checked_sub, mul_div_floor},
     pda::verify_pda,
-    state::{Config, OrderAccount, OrderLive, TokenConfig},
+    state::{OrderAccount, OrderLive},
     terminalize::terminalize_live_order,
 };
 
@@ -64,11 +64,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidTokenProgram));
     }
 
-    require_owned_by_program(config_ai, program_id).map_err(err)?;
-    let config = {
-        let d = config_ai.try_borrow().map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        Config::read_from(&d).map_err(err)?
-    };
+    let config = load_config(config_ai, program_id).map_err(err)?;
     if !addresses_eq(aggregator_signer.address(), &config.aggregator) {
         return Err(err(GatewayError::OnlyAggregator));
     }
@@ -77,13 +73,8 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     }
 
     verify_pda(order_ai.address(), &[SEED_ORDER, &order_id], order_bump, program_id).map_err(err)?;
-    verify_pda(
-        vault_authority_ai.address(),
-        &[SEED_VAULT_AUTHORITY],
-        vault_authority_bump,
-        program_id,
-    )
-    .map_err(err)?;
+    let vault_authority =
+        load_vault_authority(vault_authority_ai, vault_authority_bump, program_id).map_err(err)?;
 
     require_owned_by_program(order_ai, program_id).map_err(err)?;
     let order = {
@@ -96,16 +87,23 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         }
     };
 
-    require_owned_by_program(token_config_ai, program_id).map_err(err)?;
-    let token_config = {
-        let d = token_config_ai
-            .try_borrow()
-            .map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        TokenConfig::read_from(&d).map_err(err)?
-    };
+    let token_config = load_token_config(token_config_ai, mint_ai.address(), program_id).map_err(err)?;
     if !addresses_eq(&token_config.mint, &order.mint) || !addresses_eq(mint_ai.address(), &order.mint) {
         return Err(err(GatewayError::InvalidMint));
     }
+
+    let vault_info = crate::token::read_token_account(vault_token_account)
+        .map_err(|_| err(GatewayError::InvalidTokenAccountOwner))?;
+    if !addresses_eq(&vault_info.mint, &order.mint) || !addresses_eq(&vault_info.owner, &vault_authority) {
+        return Err(err(GatewayError::InvalidTokenAccountOwner));
+    }
+
+    let lp_info = crate::token::read_token_account(signer_token_account)
+        .map_err(|_| err(GatewayError::InvalidTokenAccountOwner))?;
+    if !addresses_eq(&lp_info.mint, &order.mint) {
+        return Err(err(GatewayError::InvalidMint));
+    }
+    let liquidity_provider = lp_info.owner;
 
     // Bind the fee destinations to their configured owners, matching `refund`
     // and `settle_in`. `settle_out` is aggregator-only, so this is
@@ -228,7 +226,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     SettleOutEvent {
         split_order_id,
         order_id,
-        signer: *signer_token_account.address(),
+        signer: liquidity_provider,
         settle_percent,
         rebate_percent,
     }

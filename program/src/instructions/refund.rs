@@ -13,10 +13,10 @@ use crate::{
     constants::{SEED_ORDER, SEED_VAULT_AUTHORITY, TOKEN_PROGRAM_ID},
     errors::GatewayError,
     events::OrderRefundedEvent,
-    instructions::{addresses_eq, require_owned_by_program, require_signer},
+    instructions::{addresses_eq, load_config, load_vault_authority, require_owned_by_program, require_signer},
     math::{checked_add, checked_sub},
-    pda::{create_pda, verify_pda},
-    state::{Config, OrderAccount},
+    pda::verify_pda,
+    state::OrderAccount,
     terminalize::terminalize_live_order,
 };
 
@@ -56,19 +56,13 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
         return Err(err(GatewayError::InvalidTokenProgram));
     }
 
-    require_owned_by_program(config_ai, program_id).map_err(err)?;
-    let config = {
-        let d = config_ai.try_borrow().map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        Config::read_from(&d).map_err(err)?
-    };
+    let config = load_config(config_ai, program_id).map_err(err)?;
     if !addresses_eq(aggregator_signer.address(), &config.aggregator) {
         return Err(err(GatewayError::OnlyAggregator));
     }
 
     verify_pda(order_ai.address(), &[SEED_ORDER, &order_id], order_bump, program_id).map_err(err)?;
-    let vault_authority = create_pda(&[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id).map_err(err)?;
-    verify_pda(vault_authority_ai.address(), &[SEED_VAULT_AUTHORITY], vault_authority_bump, program_id)
-        .map_err(err)?;
+    let vault_authority = load_vault_authority(vault_authority_ai, vault_authority_bump, program_id).map_err(err)?;
 
     require_owned_by_program(order_ai, program_id).map_err(err)?;
     let order = {

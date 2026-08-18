@@ -132,4 +132,38 @@ mod tests {
             &[Check::err(solana_program_error::ProgramError::Custom(21))],
         );
     }
+
+    #[test]
+    fn initialize_rejects_noncanonical_config_bump() {
+        let program_id = Pubkey::new_unique();
+        let mollusk = mollusk(&program_id);
+
+        let payer = Pubkey::new_unique();
+        let (config_pda, canonical_bump) = Pubkey::find_program_address(&[b"config"], &program_id);
+        let wrong_bump = canonical_bump.wrapping_sub(1);
+
+        let payer_account = Account::new(10_000_000_000, 0, &solana_sdk_ids::system_program::id());
+        let config_account = Account::new(0, 0, &solana_sdk_ids::system_program::id());
+        let system_program_account = mollusk_svm::program::keyed_account_for_system_program().1;
+
+        let instruction = Instruction::new_with_bytes(
+            program_id,
+            &initialize_ix_data(wrong_bump, 900_002),
+            vec![
+                AccountMeta::new(payer, true),
+                AccountMeta::new(config_pda, false),
+                AccountMeta::new_readonly(solana_sdk_ids::system_program::id(), false),
+            ],
+        );
+
+        mollusk.process_and_validate_instruction(
+            &instruction,
+            &[
+                (payer, payer_account),
+                (config_pda, config_account),
+                (solana_sdk_ids::system_program::id(), system_program_account),
+            ],
+            &[Check::err(solana_program_error::ProgramError::Custom(21))],
+        );
+    }
 }

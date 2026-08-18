@@ -38,8 +38,12 @@ impl TokenConfig {
         if read_tag(data) != TAG_TOKEN_CONFIG {
             return Err(GatewayError::InvalidAccountTag);
         }
+        let version = read_u8(data, Self::OFF_VERSION);
+        if version != LAYOUT_VERSION {
+            return Err(GatewayError::InvalidAccountTag);
+        }
         Ok(Self {
-            version: read_u8(data, Self::OFF_VERSION),
+            version,
             bump: read_u8(data, Self::OFF_BUMP),
             is_supported: read_u8(data, Self::OFF_IS_SUPPORTED) != 0,
             mint: read_address(data, Self::OFF_MINT),

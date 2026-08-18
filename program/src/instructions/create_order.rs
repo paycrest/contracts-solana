@@ -18,14 +18,14 @@ use pinocchio_system::create_account_with_minimum_balance_signed;
 use pinocchio_token::instructions::transfer::Transfer;
 
 use crate::{
-    constants::{SEED_ORDER, SEED_VAULT_AUTHORITY, TOKEN_PROGRAM_ID},
+    constants::{MESSAGE_HASH_MAX_SIZE, SEED_ORDER, SEED_VAULT_AUTHORITY, TOKEN_PROGRAM_ID},
     errors::GatewayError,
     events::OrderCreated,
     hash::order_id_preimage_hash,
-    instructions::{addresses_eq, is_zero_address, require_owned_by_program, require_signer},
+    instructions::{addresses_eq, is_zero_address, load_config, load_token_config, require_signer},
     math::mul_div_floor,
     pda::{create_pda, verify_pda},
-    state::{Config, OrderLive, TokenConfig},
+    state::OrderLive,
 };
 
 fn err(e: GatewayError) -> ProgramError {
@@ -80,11 +80,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     }
 
     // -- Config: paused + caps (D0/D15) --
-    require_owned_by_program(config_ai, program_id).map_err(err)?;
-    let config = {
-        let d = config_ai.try_borrow().map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        Config::read_from(&d).map_err(err)?
-    };
+    let config = load_config(config_ai, program_id).map_err(err)?;
     if config.paused {
         return Err(err(GatewayError::ContractPaused));
     }
@@ -93,13 +89,7 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     }
 
     // -- TokenConfig: supported + fee settings --
-    require_owned_by_program(token_config_ai, program_id).map_err(err)?;
-    let token_config = {
-        let d = token_config_ai
-            .try_borrow()
-            .map_err(|_| err(GatewayError::InvalidAccountTag))?;
-        TokenConfig::read_from(&d).map_err(err)?
-    };
+    let token_config = load_token_config(token_config_ai, mint_ai.address(), program_id).map_err(err)?;
     if !token_config.is_supported {
         return Err(err(GatewayError::TokenNotSupported));
     }
@@ -120,13 +110,17 @@ pub fn process(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) 
     if message_hash.is_empty() {
         return Err(err(GatewayError::InvalidMessageHash));
     }
+    if message_hash.len() > MESSAGE_HASH_MAX_SIZE {
+        return Err(err(GatewayError::InvalidMessageHash));
+    }
 
     // -- D10: refund_address must already have a token account for mint --
     crate::token::assert_existing_token_account_for(refund_token_account, mint_ai.address(), &refund_address)
         .map_err(|_| err(GatewayError::MissingRefundTokenAccount))?;
 
-    // -- Vault ATA: must be owned by the vault authority PDA --
+    // -- Vault ATA: must be owned by the canonical vault authority PDA --
     let vault_authority = create_pda(&[SEED_VAULT_AUTHORITY], vault_bump, program_id).map_err(err)?;
+    verify_pda(&vault_authority, &[SEED_VAULT_AUTHORITY], vault_bump, program_id).map_err(err)?;
     let vault_info = crate::token::read_token_account(vault_token_account)
         .map_err(|_| err(GatewayError::InvalidTokenAccountOwner))?;
     if !addresses_eq(&vault_info.mint, mint_ai.address()) {

@@ -48,8 +48,12 @@ impl OrderLive {
         if read_tag(data) != TAG_ORDER_LIVE {
             return Err(GatewayError::InvalidAccountTag);
         }
+        let version = read_u8(data, Self::OFF_VERSION);
+        if version != LAYOUT_VERSION {
+            return Err(GatewayError::InvalidAccountTag);
+        }
         Ok(Self {
-            version: read_u8(data, Self::OFF_VERSION),
+            version,
             bump: read_u8(data, Self::OFF_BUMP),
             is_fulfilled: read_u8(data, Self::OFF_IS_FULFILLED) != 0,
             is_refunded: read_u8(data, Self::OFF_IS_REFUNDED) != 0,
@@ -113,8 +117,12 @@ impl OrderTombstone {
         if read_tag(data) != TAG_ORDER_TOMBSTONE {
             return Err(GatewayError::InvalidAccountTag);
         }
+        let version = read_u8(data, Self::OFF_VERSION);
+        if version != LAYOUT_VERSION {
+            return Err(GatewayError::InvalidAccountTag);
+        }
         Ok(Self {
-            version: read_u8(data, Self::OFF_VERSION),
+            version,
             bump: read_u8(data, Self::OFF_BUMP),
             is_fulfilled: read_u8(data, Self::OFF_IS_FULFILLED) != 0,
             is_refunded: read_u8(data, Self::OFF_IS_REFUNDED) != 0,
